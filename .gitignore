@@ -1,0 +1,19 @@
+# Data files (too large for git)
+data/*.csv
+data/*.db
+data/*.tar.gz
+
+# MediaCrawler (cloned dependency)
+MediaCrawler/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# IDs file
+creator_ids.txt
+
+# OS
+.DS_Store
