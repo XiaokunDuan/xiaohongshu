@@ -13,6 +13,7 @@ The cleanup goal is to keep the data/results intact while isolating old crawler 
 - `data/`: collected sqlite/csv outputs and crawl state
 - `analysis/`: analysis scripts and intermediate data
 - `reports/`: exported charts and reports
+- `reports/audit/`: audit summaries and derived coverage lists
 - `MediaCrawler/`: third-party upstream crawler repository
 - `Spider_XHS/`: third-party upstream crawler repository
 - `batch_crawler.py`: simplified local entrypoint that syncs creator IDs and launches `MediaCrawler`
@@ -37,6 +38,12 @@ These files are preserved for reference, but they are no longer treated as the m
 - Keep third-party repositories intact for comparison/reference
 - Move duplicated local crawler experiments out of the main path
 - Rewrite the next crawler implementation in a single dedicated location instead of adding another parallel script
+
+## Directory intent
+
+- `data/` should contain crawl inputs, raw exports, sqlite databases, and runtime state
+- `reports/` should contain human-facing outputs, figures, and audit summaries
+- `data/xhs_cookie.txt.example` is a safe template; the real `data/xhs_cookie.txt` stays local only
 
 ## Next step
 
