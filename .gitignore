@@ -2,9 +2,11 @@
 data/*.csv
 data/*.db
 data/*.tar.gz
+data/xhs_cookie.txt
 
 # MediaCrawler (cloned dependency)
 MediaCrawler/
+Spider_XHS/
 
 # Python
 __pycache__/
@@ -14,6 +16,8 @@ __pycache__/
 
 # IDs file
 creator_ids.txt
+crawl.log
+notes.db
 
 # OS
 .DS_Store

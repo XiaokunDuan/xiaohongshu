@@ -16,7 +16,7 @@ import httpx
 from playwright.async_api import async_playwright
 
 PROXY = "http://127.0.0.1:7890"
-COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ef23bf63b4bd5e8b770; webId=c4977872fab544a22e28fe3af3e3b242; xsecappid=xhs-pc-web"
+COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ec9def63b4bdacdfdb9; webId=c4977872fab544a22e28fe3af3e3b242; xsecappid=xhs-pc-web"
 API_HOST = "https://edith.xiaohongshu.com"
 TEST_USER_ID = "5a73c5fa4eacab4c4ccc9778"
 

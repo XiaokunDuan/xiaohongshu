@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-小红书 HTML 解析采集脚本
-从用户主页 HTML 提取笔记列表，再逐篇获取详情页。
-每人首屏约30篇笔记。
+小红书 HTML 解析采集脚本（Playwright版）
+用Playwright访问页面，从 __INITIAL_STATE__ 提取数据。
+浏览器自动维护session，不会cookie过期。
 
 用法：
     python scraper/crawl_html.py                # 从上次中断处继续
@@ -12,8 +12,8 @@
 """
 
 import argparse
+import asyncio
 import json
-import os
 import random
 import re
 import sqlite3
@@ -21,9 +21,6 @@ import sys
 import time
 from pathlib import Path
 
-import requests
-
-# Ensure print output is flushed immediately (for nohup/redirect)
 sys.stdout.reconfigure(line_buffering=True)
 
 BASE_DIR = Path(__file__).parent.parent
@@ -31,38 +28,30 @@ PROGRESS_DB = BASE_DIR / "data" / "crawl_progress.db"
 NOTES_DB = BASE_DIR / "data" / "notes.db"
 
 PROXY = "http://127.0.0.1:7890"
-PROXIES = {"http": PROXY, "https": PROXY}
-COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ef23bf63b4bd5e8b770; webId=c4977872fab544a22e28fe3af3e3b242"
-HEADERS = {
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "referer": "https://www.xiaohongshu.com/",
-    "cookie": COOKIE_STR,
-}
+COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ec9def63b4bdacdfdb9; webId=c4977872fab544a22e28fe3af3e3b242"
 
-# Delay between requests (seconds)
 MIN_DELAY = 1.5
 MAX_DELAY = 3.0
+
+
+def parse_cookie_str(s):
+    d = {}
+    for item in s.split(";"):
+        item = item.strip()
+        if "=" in item:
+            k, v = item.split("=", 1)
+            d[k.strip()] = v.strip()
+    return d
 
 
 def init_notes_db():
     conn = sqlite3.connect(NOTES_DB)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS notes (
-            note_id TEXT PRIMARY KEY,
-            creator_id TEXT,
-            creator_name TEXT,
-            title TEXT,
-            content TEXT,
-            note_type TEXT,
-            liked_count TEXT,
-            collected_count TEXT,
-            comment_count TEXT,
-            share_count TEXT,
-            tags TEXT,
-            ip_location TEXT,
-            time INTEGER,
-            last_update_time INTEGER,
-            crawled_at TEXT
+            note_id TEXT PRIMARY KEY, creator_id TEXT, creator_name TEXT,
+            title TEXT, content TEXT, note_type TEXT,
+            liked_count TEXT, collected_count TEXT, comment_count TEXT, share_count TEXT,
+            tags TEXT, ip_location TEXT, time INTEGER, last_update_time INTEGER, crawled_at TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_creator ON notes(creator_id)")
@@ -104,37 +93,50 @@ def parse_state(html):
     return json.loads(raw)
 
 
-def fetch_page(url, retries=2):
-    """Fetch a page with retries."""
+async def fetch_page(page, url, retries=2):
+    """Fetch a page using Playwright. Intercept initial HTML before JS modifies it."""
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, proxies=PROXIES, timeout=15)
-            if resp.status_code == 200:
-                if "IP_BLOCK" in resp.text or "访问频率" in resp.text:
-                    print("  ⚠️ IP 被限流，等待60秒...")
-                    time.sleep(60)
-                    continue
-                return resp.text
-            elif resp.status_code == 461:
-                print(f"  ⚠️ 461 验证码触发，等待30秒...")
-                time.sleep(30)
-                continue
-            else:
-                print(f"  ⚠️ HTTP {resp.status_code}")
+            # Capture the raw server response (before JS modifies __INITIAL_STATE__)
+            raw_html = None
+            async def capture_response(response):
+                nonlocal raw_html
+                if response.url.split("?")[0].rstrip("/") == url.rstrip("/") and "text/html" in (response.headers.get("content-type", "")):
+                    try:
+                        raw_html = await response.text()
+                    except:
+                        pass
+            page.on("response", capture_response)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.remove_listener("response", capture_response)
+            if resp is None:
                 return None
-        except requests.exceptions.RequestException as e:
+            html = raw_html or await page.content()
+            if "IP_BLOCK" in html or "访问频率" in html:
+                print("  ⚠️ IP 被限流，等待60秒...")
+                await asyncio.sleep(60)
+                continue
+            if resp.status == 461:
+                print("  ⚠️ 461 验证码触发，等待30秒...")
+                await asyncio.sleep(30)
+                continue
+            if resp.status != 200:
+                print(f"  ⚠️ HTTP {resp.status}")
+                return None
+            return html
+        except Exception as e:
             if attempt < retries:
-                time.sleep(5)
+                await asyncio.sleep(5)
             else:
                 print(f"  ❌ 请求失败: {e}")
                 return None
     return None
 
 
-def get_notes_from_profile(user_id):
+async def get_notes_from_profile(page, user_id):
     """Fetch user profile page and extract note list."""
     url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
-    html = fetch_page(url)
+    html = await fetch_page(page, url)
     if not html:
         return None, None
 
@@ -142,12 +144,10 @@ def get_notes_from_profile(user_id):
     if not state:
         return None, None
 
-    # Extract user info
     user_data = state.get("user", {}).get("userPageData", {})
     basic = user_data.get("basicInfo", {})
     nickname = basic.get("nickname", "")
 
-    # Extract notes (nested list structure)
     notes_raw = state.get("user", {}).get("notes", [])
     if notes_raw is None:
         notes_raw = []
@@ -164,10 +164,10 @@ def get_notes_from_profile(user_id):
     return nickname, all_notes
 
 
-def get_note_detail(note_id):
+async def get_note_detail(page, note_id):
     """Fetch note detail page and extract content."""
     url = f"https://www.xiaohongshu.com/explore/{note_id}"
-    html = fetch_page(url)
+    html = await fetch_page(page, url)
     if not html:
         return None
 
@@ -205,7 +205,6 @@ def get_note_detail(note_id):
 
 
 def save_note(notes_conn, note_data, creator_id, creator_name):
-    """Save a note to the database."""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     notes_conn.execute("""
         INSERT OR REPLACE INTO notes
@@ -224,13 +223,12 @@ def save_note(notes_conn, note_data, creator_id, creator_name):
     notes_conn.commit()
 
 
-def crawl_creator(notes_conn, user_id, name, idx, total):
+async def crawl_creator(page, notes_conn, user_id, name, idx, total):
     """Crawl all available notes for a single creator."""
     print(f"\n[{idx}/{total}] {name or user_id}")
     update_progress(user_id, "running")
 
-    # Step 1: Get notes list from profile
-    nickname, notes_list = get_notes_from_profile(user_id)
+    nickname, notes_list = await get_notes_from_profile(page, user_id)
     if notes_list is None:
         print(f"  ❌ 无法获取主页")
         update_progress(user_id, "error", error="profile_fetch_failed")
@@ -244,30 +242,33 @@ def crawl_creator(notes_conn, user_id, name, idx, total):
     creator_name = nickname or name
     print(f"  找到 {len(notes_list)} 篇笔记，开始获取详情...")
 
-    # Step 2: Get detail for each note
     success_count = 0
+    consec_fail = 0
     for i, note_item in enumerate(notes_list):
         note_id = note_item.get("id", "")
         if not note_id:
             continue
 
-        # Check if already crawled
         existing = notes_conn.execute("SELECT 1 FROM notes WHERE note_id=?", (note_id,)).fetchone()
         if existing:
             success_count += 1
             continue
 
         delay = random.uniform(MIN_DELAY, MAX_DELAY)
-        time.sleep(delay)
+        await asyncio.sleep(delay)
 
-        detail = get_note_detail(note_id)
+        detail = await get_note_detail(page, note_id)
         if detail:
             save_note(notes_conn, detail, user_id, creator_name)
             success_count += 1
+            consec_fail = 0
             if (i + 1) % 10 == 0:
                 print(f"  进度: {i+1}/{len(notes_list)}")
         else:
-            print(f"  ⚠️ 笔记 {note_id} 详情获取失败")
+            consec_fail += 1
+            if consec_fail >= 5:
+                print(f"  ⚠️ 连续{consec_fail}次失败，跳过剩余笔记")
+                break
 
     print(f"  ✓ 完成: {success_count}/{len(notes_list)} 篇")
     update_progress(user_id, "done", actual_notes=success_count)
@@ -283,7 +284,6 @@ def show_status():
     total = conn.execute("SELECT COUNT(*) FROM creator_progress").fetchone()[0]
     conn.close()
 
-    # Notes DB stats
     notes_count = 0
     if NOTES_DB.exists():
         nc = sqlite3.connect(NOTES_DB)
@@ -318,8 +318,8 @@ def export_csv():
     print(f"已导出 {len(rows)} 条到 {out_path}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="小红书 HTML 采集")
+async def main():
+    parser = argparse.ArgumentParser(description="小红书 HTML 采集 (Playwright)")
     parser.add_argument("--test", type=int, default=0, help="测试前N个博主")
     parser.add_argument("--status", action="store_true", help="查看进度")
     parser.add_argument("--export", action="store_true", help="导出CSV")
@@ -340,7 +340,8 @@ def main():
         print(f"已重置 {n} 个")
         return
 
-    # Init
+    from playwright.async_api import async_playwright
+
     notes_conn = init_notes_db()
     limit = args.test if args.test > 0 else None
     pending = get_pending_creators(limit)
@@ -354,25 +355,49 @@ def main():
     print(f"待采集: {total} 个博主")
     total_notes = 0
 
-    try:
-        for idx, (user_id, name, expected) in enumerate(pending, 1):
-            count = crawl_creator(notes_conn, user_id, name, idx, total)
-            total_notes += count
+    cookie_dict = parse_cookie_str(COOKIE_STR)
 
-            # Profile page delay
-            delay = random.uniform(MIN_DELAY, MAX_DELAY)
-            time.sleep(delay)
+    async with async_playwright() as p:
+        print("启动 Playwright...")
+        browser = await p.chromium.launch(headless=True, proxy={"server": PROXY})
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        )
+        await context.add_cookies([
+            {"name": k, "value": v, "domain": ".xiaohongshu.com", "path": "/"}
+            for k, v in cookie_dict.items()
+        ])
+        page = await context.new_page()
+        print("✓ 浏览器就绪")
 
-    except KeyboardInterrupt:
-        # Reset running to pending
-        conn = sqlite3.connect(PROGRESS_DB)
-        conn.execute("UPDATE creator_progress SET status='pending' WHERE status='running'")
-        conn.commit()
-        conn.close()
-        print(f"\n\n中断，已保存进度。共采集 {total_notes} 篇笔记。")
+        try:
+            consec_zero = 0
+            for idx, (user_id, name, expected) in enumerate(pending, 1):
+                count = await crawl_creator(page, notes_conn, user_id, name, idx, total)
+                total_notes += count
+
+                if count == 0:
+                    consec_zero += 1
+                    if consec_zero >= 10:
+                        print(f"\n⚠️ 连续{consec_zero}个博主0篇，可能session异常，停止采集")
+                        break
+                else:
+                    consec_zero = 0
+
+                delay = random.uniform(MIN_DELAY, MAX_DELAY)
+                await asyncio.sleep(delay)
+
+        except KeyboardInterrupt:
+            conn = sqlite3.connect(PROGRESS_DB)
+            conn.execute("UPDATE creator_progress SET status='pending' WHERE status='running'")
+            conn.commit()
+            conn.close()
+            print(f"\n\n中断，已保存进度。共采集 {total_notes} 篇笔记。")
+
+        await browser.close()
 
     show_status()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

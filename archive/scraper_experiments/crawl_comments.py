@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).parent.parent
 NOTES_DB = BASE_DIR / "data" / "notes.db"
 
 PROXY = "http://127.0.0.1:7890"
-COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ef23bf63b4bd5e8b770; webId=c4977872fab544a22e28fe3af3e3b242"
+COOKIE_STR = "a1=19b59fabb6bw93jydbj5sf9kdgrbbg27yx5f4hszh30000101682; web_session=040069b522744d19141ec9def63b4bdacdfdb9; webId=c4977872fab544a22e28fe3af3e3b242"
 
 
 def parse_cookie_str(cookie_str):

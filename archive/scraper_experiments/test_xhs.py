@@ -16,6 +16,12 @@ import sys
 import time
 
 from xhs import XhsClient
+from xhs.help import sign as _xhs_sign
+
+
+def xhs_sign(url, data=None, a1="", **kwargs):
+    """Wrapper to match the signature expected by XhsClient._pre_headers"""
+    return _xhs_sign(url, data, a1=a1)
 
 
 def test_connection(client):
@@ -123,7 +129,7 @@ def main():
         proxies = {"http": args.proxy, "https": args.proxy}
 
     print("初始化 XhsClient...")
-    client = XhsClient(cookie=args.cookie, proxies=proxies)
+    client = XhsClient(cookie=args.cookie, proxies=proxies, sign=xhs_sign)
     print(f"  代理: {args.proxy or '无'}")
 
     # 测试1: 用户信息
