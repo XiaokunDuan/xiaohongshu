@@ -4,6 +4,14 @@ data/*.db
 data/*.tar.gz
 data/xhs_cookie.txt
 
+# Bulk raw/generated datasets
+data/dom_crawl/
+data/dom_click_crawl/
+data/dom_click_experiments/
+data/text_mining_500/
+archive/done_snapshot_*/
+archive/error_snapshot_*/
+
 # MediaCrawler (cloned dependency)
 MediaCrawler/
 Spider_XHS/

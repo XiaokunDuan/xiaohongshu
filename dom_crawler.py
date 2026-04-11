@@ -35,13 +35,13 @@ POSTS_CSV = OUTPUT_DIR / "posts.csv"
 COMMENTS_CSV = OUTPUT_DIR / "comments.csv"
 CDP_URL = "http://127.0.0.1:9222"
 
-# Conservative pacing to reduce the chance of rate limiting.
-PROFILE_LOAD_WAIT_SEC = 7
-NOTE_LOAD_WAIT_SEC = 7
-BETWEEN_NOTES_MIN_SEC = 8.0
-BETWEEN_NOTES_MAX_SEC = 12.0
-BETWEEN_CREATORS_MIN_SEC = 20.0
-BETWEEN_CREATORS_MAX_SEC = 30.0
+# Faster randomized pacing.
+PROFILE_LOAD_WAIT_SEC = 3.5
+NOTE_LOAD_WAIT_SEC = 3.5
+BETWEEN_NOTES_MIN_SEC = 2.0
+BETWEEN_NOTES_MAX_SEC = 4.0
+BETWEEN_CREATORS_MIN_SEC = 4.0
+BETWEEN_CREATORS_MAX_SEC = 7.0
 
 
 def progress_bar(current: int, total: int, width: int = 24) -> str:
@@ -380,7 +380,7 @@ def absolutize_href(href: str) -> str:
     return f"https://www.xiaohongshu.com{href}"
 
 
-async def crawl_creator(page, uid: str, name: str, max_notes: int = 0) -> dict[str, Any]:
+async def crawl_creator(page, uid: str, name: str, max_notes: int = 10) -> dict[str, Any]:
     result = load_existing_creator_result(uid, name)
     result["error"] = ""
     existing_note_ids = {note.get("note_id", "") for note in result["notes"]}
@@ -522,7 +522,7 @@ def append_comments_csv(creator_id: str, note: dict[str, Any]) -> None:
             )
 
 
-async def run(limit: int = 0, seed: int = 42, max_notes: int = 0) -> None:
+async def run(limit: int = 0, seed: int = 42, max_notes: int = 10) -> None:
     conn = connect_db()
     synced = sync_creators(conn)
     print(f"Synced {synced} creators from CSV")
@@ -591,7 +591,7 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Crawl all pending creators")
     parser.add_argument("--reset-errors", action="store_true", help="Reset error rows to pending")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for --sample")
-    parser.add_argument("--max-notes", type=int, default=0, help="Limit visible notes crawled per creator")
+    parser.add_argument("--max-notes", type=int, default=10, help="Limit visible notes crawled per creator (default: 10)")
     args = parser.parse_args()
 
     conn = connect_db()

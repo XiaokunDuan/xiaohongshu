@@ -82,7 +82,7 @@ _cmap = mcolors.LinearSegmentedColormap.from_list(
 import matplotlib
 matplotlib.colormaps.register(_cmap, name=CMAP_NAME, force=True)
 
-CLUSTER_NAMES = {0: '主流生活型', 1: '年轻受众型', 2: '干货变现型'}
+CLUSTER_NAMES = {0: '均衡主流型', 1: '收藏转化与商业合作型', 2: '高评赞比型'}
 
 # ── 全局样式 ──────────────────────────────────────────────────────────
 plt.rcParams.update({
