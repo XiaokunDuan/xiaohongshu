@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_creator_rows() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    with DAREN_CSV.open("r", encoding="utf-8") as handle:
+    with DAREN_CSV.open("r", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             url = (row.get("达人官方地址") or "").strip()

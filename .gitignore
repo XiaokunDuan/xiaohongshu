@@ -9,8 +9,19 @@ data/dom_crawl/
 data/dom_click_crawl/
 data/dom_click_experiments/
 data/text_mining_500/
+data/text_mining_full/
+data/embeddings_qwen3_8b/
 archive/done_snapshot_*/
 archive/error_snapshot_*/
+
+# Generated reports
+reports/chapter4_support/
+reports/text_mining_full/
+reports/text_mining_500/
+
+# Experiment artifacts / samples
+analysis/lda_exploration_*.json
+data/cdp_intercept_sample.json
 
 # MediaCrawler (cloned dependency)
 MediaCrawler/

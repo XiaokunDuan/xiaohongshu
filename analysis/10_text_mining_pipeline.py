@@ -39,6 +39,8 @@ import pandas as pd
 import requests
 from sklearn.base import clone
 from sklearn.decomposition import NMF
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import classification_report
@@ -65,7 +67,7 @@ REPORTS_DIR = BASE_DIR / "reports"
 DOM_CLICK_DIR = DATA_DIR / "dom_click_crawl"
 CREATORS_CSV = DATA_DIR / "daren_clusters_k3.csv"
 
-RUN_NAME = "text_mining_500"
+RUN_NAME = os.getenv("TEXT_MINING_RUN_NAME", "text_mining_full")
 RUN_DIR = DATA_DIR / RUN_NAME
 PLOTS_DIR = REPORTS_DIR / RUN_NAME
 SNAPSHOT_DIR = RUN_DIR / "snapshot"
@@ -114,8 +116,11 @@ COMMENT_LABELS = [
 
 TOPIC_NAME_RULES = [
     ("母婴与育儿消费", ["奶粉", "宝宝", "妈妈", "育儿", "母婴", "成长"]),
+    ("旅行攻略与城市体验", ["旅行", "旅游", "酒店", "香港", "上海", "攻略"]),
+    ("护肤抗老与女性表达", ["护肤", "皮肤", "抗老", "精华", "面霜", "肌肤"]),
+    ("春日氛围与居家审美", ["春天", "治愈", "沉浸", "装修", "家居", "温柔"]),
+    ("女性成长与自我提升", ["人生", "女性", "成长", "工作", "提升", "勇气"]),
     ("日常治愈与独居生活", ["宅家", "治愈", "独居", "幸福", "美食", "一天", "minivlog"]),
-    ("女性成长与自我提升", ["人生", "女性", "成长", "工作", "提升", "勇气", "世界"]),
     ("情侣亲情与关系日常", ["情侣", "闺蜜", "夫妻", "恋爱", "亲情", "家人"]),
     ("购物开箱与好物种草", ["购物", "开箱", "种草", "好物", "快递", "分享"]),
     ("跨文化旅行与在华外国人", ["外国人", "中国", "旅游", "老外", "美国", "地铁"]),
@@ -273,7 +278,7 @@ def assign_analysis_split(df: pd.DataFrame, id_col: str = "creator_id") -> pd.Da
 
 
 def load_creator_lookup() -> pd.DataFrame:
-    creators = pd.read_csv(CREATORS_CSV)
+    creators = pd.read_csv(CREATORS_CSV, encoding="utf-8-sig")
     creators["creator_id"] = creators["达人官方地址"].astype(str).str.extract(r"profile/([a-f0-9]{24})")
     keep_cols = [
         "creator_id",
@@ -297,7 +302,11 @@ def iter_dom_click_records() -> Iterable[dict[str, Any]]:
         yield data
 
 
-def build_snapshot(sample_size: int = 500) -> None:
+def snapshot_file(name: str) -> Path:
+    return SNAPSHOT_DIR / name
+
+
+def build_snapshot(sample_size: int = 0) -> None:
     ensure_dirs()
     creator_lookup = load_creator_lookup()
     creator_map = creator_lookup.set_index("creator_id").to_dict("index")
@@ -377,7 +386,10 @@ def build_snapshot(sample_size: int = 500) -> None:
         ["comment_count", "note_count", "followers"],
         ascending=[False, False, False],
     )
-    sample_df = creators_df.head(sample_size).copy()
+    if sample_size and sample_size > 0:
+        sample_df = creators_df.head(sample_size).copy()
+    else:
+        sample_df = creators_df.copy()
     sample_ids = set(sample_df["creator_id"])
 
     posts_df = pd.DataFrame(post_rows)
@@ -385,12 +397,12 @@ def build_snapshot(sample_size: int = 500) -> None:
     posts_df = posts_df[posts_df["creator_id"].isin(sample_ids)].copy()
     comments_df = comments_df[comments_df["creator_id"].isin(sample_ids)].copy()
 
-    sample_df.to_csv(SNAPSHOT_DIR / "creator_snapshot_500.csv", index=False)
-    posts_df.to_csv(SNAPSHOT_DIR / "posts_snapshot_500.csv", index=False)
-    comments_df.to_csv(SNAPSHOT_DIR / "comments_snapshot_500.csv", index=False)
+    sample_df.to_csv(snapshot_file("creator_snapshot.csv"), index=False)
+    posts_df.to_csv(snapshot_file("posts_snapshot.csv"), index=False)
+    comments_df.to_csv(snapshot_file("comments_snapshot.csv"), index=False)
 
     manifest = {
-        "sample_size_requested": sample_size,
+        "sample_size_requested": int(sample_size) if sample_size else "all",
         "sample_size_actual": int(len(sample_df)),
         "posts": int(len(posts_df)),
         "comments": int(len(comments_df)),
@@ -406,9 +418,19 @@ def build_snapshot(sample_size: int = 500) -> None:
 
 
 def load_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    creators = pd.read_csv(SNAPSHOT_DIR / "creator_snapshot_500.csv")
-    posts = pd.read_csv(SNAPSHOT_DIR / "posts_snapshot_500.csv")
-    comments = pd.read_csv(SNAPSHOT_DIR / "comments_snapshot_500.csv")
+    creator_path = snapshot_file("creator_snapshot.csv")
+    post_path = snapshot_file("posts_snapshot.csv")
+    comment_path = snapshot_file("comments_snapshot.csv")
+    if not creator_path.exists():
+        legacy_creator = SNAPSHOT_DIR / "creator_snapshot_500.csv"
+        legacy_post = SNAPSHOT_DIR / "posts_snapshot_500.csv"
+        legacy_comment = SNAPSHOT_DIR / "comments_snapshot_500.csv"
+        creator_path = legacy_creator if legacy_creator.exists() else creator_path
+        post_path = legacy_post if legacy_post.exists() else post_path
+        comment_path = legacy_comment if legacy_comment.exists() else comment_path
+    creators = pd.read_csv(creator_path)
+    posts = pd.read_csv(post_path)
+    comments = pd.read_csv(comment_path)
     return creators, posts, comments
 
 
@@ -421,16 +443,22 @@ def run_topic_model_on_posts(topic_count: int = DEFAULT_TOPIC_COUNT) -> None:
     if posts.empty:
         raise RuntimeError("No post texts available in snapshot.")
 
-    vectorizer = TfidfVectorizer(
+    vectorizer = CountVectorizer(
         tokenizer=tokenize_zh,
         token_pattern=None,
-        min_df=3,
-        max_df=0.85,
+        min_df=5,
+        max_df=0.80,
         ngram_range=(1, 2),
         max_features=6000,
     )
     matrix = vectorizer.fit_transform(posts["post_text"])
-    model = NMF(n_components=min(topic_count, max(2, matrix.shape[0] - 1)), random_state=42)
+    n_components = min(topic_count, max(2, matrix.shape[0] - 1))
+    model = LatentDirichletAllocation(
+        n_components=n_components,
+        random_state=42,
+        learning_method="batch",
+        max_iter=30,
+    )
     topic_weights = model.fit_transform(matrix)
     feature_names = vectorizer.get_feature_names_out()
     posts["topic_id"] = topic_weights.argmax(axis=1)
@@ -451,12 +479,24 @@ def run_topic_model_on_posts(topic_count: int = DEFAULT_TOPIC_COUNT) -> None:
                 "post_count": int(len(topic_posts)),
                 "keywords": " | ".join(keywords),
                 "representative_posts": json.dumps(representative, ensure_ascii=False),
+                "model": "LDA",
             }
         )
 
     topic_df = pd.DataFrame(topic_rows).sort_values("post_count", ascending=False)
     topic_df.to_csv(TOPIC_DIR / "post_topics.csv", index=False)
     posts.to_csv(TOPIC_DIR / "posts_with_topics.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "topic_count": n_components,
+                "perplexity": float(model.perplexity(matrix)),
+                "log_likelihood": float(model.score(matrix)),
+                "post_count": int(len(posts)),
+                "model": "LDA",
+            }
+        ]
+    ).to_csv(TOPIC_DIR / "lda_diagnostics.csv", index=False)
 
     font_path = find_mac_font()
     plt.figure(figsize=(10, 6))
@@ -919,9 +959,14 @@ def build_topic_label_linkage() -> None:
 
 def infer_topic_name(keywords: list[str], representative_posts: list[dict[str, Any]]) -> str:
     haystack = " ".join(keywords) + " " + " ".join(post.get("post_text", "") for post in representative_posts)
-    for topic_name, clues in TOPIC_NAME_RULES:
-        if any(clue in haystack for clue in clues):
-            return topic_name
+    scored_matches: list[tuple[int, int, str]] = []
+    for idx, (topic_name, clues) in enumerate(TOPIC_NAME_RULES):
+        score = sum(1 for clue in clues if clue in haystack)
+        if score:
+            scored_matches.append((score, -idx, topic_name))
+    if scored_matches:
+        scored_matches.sort(reverse=True)
+        return scored_matches[0][2]
     return "综合生活表达"
 
 
@@ -1631,7 +1676,7 @@ def parse_args() -> argparse.Namespace:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     snapshot = sub.add_parser("snapshot", help="Freeze creator/post/comment snapshot")
-    snapshot.add_argument("--sample-size", type=int, default=500)
+    snapshot.add_argument("--sample-size", type=int, default=0)
 
     topic = sub.add_parser("topic-model-posts", help="Run topic model on snapshot posts")
     topic.add_argument("--topic-count", type=int, default=DEFAULT_TOPIC_COUNT)

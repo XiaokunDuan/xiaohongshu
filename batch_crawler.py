@@ -57,7 +57,7 @@ def extract_creators_from_csv() -> list[tuple[str, str, int]]:
         raise FileNotFoundError(f"Master creator CSV not found: {DAREN_CSV}")
 
     rows: list[tuple[str, str, int]] = []
-    with DAREN_CSV.open("r", encoding="utf-8") as handle:
+    with DAREN_CSV.open("r", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             url = (row.get("达人官方地址") or "").strip()

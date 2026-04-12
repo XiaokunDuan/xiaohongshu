@@ -76,7 +76,7 @@ def sync_creators(conn: sqlite3.Connection) -> int:
         raise FileNotFoundError(f"CSV not found: {DAREN_CSV}")
 
     rows = []
-    with DAREN_CSV.open("r", encoding="utf-8") as handle:
+    with DAREN_CSV.open("r", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
             url = (row.get("达人官方地址") or "").strip()
             match = re.search(r"profile/([a-f0-9]{24})", url)
@@ -91,7 +91,13 @@ def sync_creators(conn: sqlite3.Connection) -> int:
             rows.append((uid, name, expected))
 
     conn.executemany(
-        "INSERT OR IGNORE INTO creator_progress (user_id, name, expected_notes) VALUES (?, ?, ?)",
+        """
+        INSERT INTO creator_progress (user_id, name, expected_notes)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            name=excluded.name,
+            expected_notes=excluded.expected_notes
+        """,
         rows,
     )
     conn.commit()

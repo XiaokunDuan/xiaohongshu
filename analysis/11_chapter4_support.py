@@ -15,6 +15,7 @@ Outputs:
 from __future__ import annotations
 
 import os
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -36,6 +37,10 @@ DATA_DIR = BASE_DIR / "data"
 REPORTS_DIR = BASE_DIR / "reports" / "chapter4_support"
 TABLES_DIR = REPORTS_DIR / "tables"
 PLOTS_DIR = REPORTS_DIR / "plots"
+TEXT_RUN_NAME = os.getenv("TEXT_MINING_RUN_NAME", "text_mining_full")
+TEXT_RUN_DIR = DATA_DIR / TEXT_RUN_NAME
+SNAPSHOT_DIR = TEXT_RUN_DIR / "snapshot"
+TOPIC_DIR = TEXT_RUN_DIR / "topics"
 
 CLUSTER_FEATURES = ["粉丝数", "Top1年龄段占比", "藏赞比", "评赞比", "商业笔记占比"]
 COMMENT_LABELS = [
@@ -127,8 +132,14 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]
     combined = pd.read_csv(BASE_DIR / "analysis" / "combined_cleaned_final.csv")
     clusters = pd.read_csv(DATA_DIR / "daren_clusters_k3.csv")
     clusters["creator_id"] = creator_id_from_url(clusters["达人官方地址"])
-    posts = pd.read_csv(DATA_DIR / "dom_crawl" / "posts.csv")
-    comments = pd.read_csv(DATA_DIR / "dom_crawl" / "comments.csv")
+    snapshot_posts = SNAPSHOT_DIR / "posts_snapshot.csv"
+    snapshot_comments = SNAPSHOT_DIR / "comments_snapshot.csv"
+    if snapshot_posts.exists() and snapshot_comments.exists():
+        posts = pd.read_csv(snapshot_posts)
+        comments = pd.read_csv(snapshot_comments)
+    else:
+        posts = pd.read_csv(DATA_DIR / "dom_crawl" / "posts.csv")
+        comments = pd.read_csv(DATA_DIR / "dom_crawl" / "comments.csv")
     return combined, clusters, posts, comments
 
 
@@ -147,13 +158,23 @@ def export_data_source_tables(
     comments: pd.DataFrame,
 ) -> None:
     cluster_matched = clusters[clusters["creator_id"].isin(posts["creator_id"].astype(str))].copy()
+    post_source = (
+        f"data/{TEXT_RUN_NAME}/snapshot/posts_snapshot.csv"
+        if (SNAPSHOT_DIR / "posts_snapshot.csv").exists()
+        else "data/dom_crawl/posts.csv"
+    )
+    comment_source = (
+        f"data/{TEXT_RUN_NAME}/snapshot/comments_snapshot.csv"
+        if (SNAPSHOT_DIR / "comments_snapshot.csv").exists()
+        else "data/dom_crawl/comments.csv"
+    )
     source_table = pd.DataFrame(
         [
             {"数据层级": "达人画像样本", "数据文件": "analysis/combined_cleaned_final.csv", "样本量": len(combined), "说明": "达人基础信息、粉丝画像、商业价值与互动指标"},
             {"数据层级": "聚类分析样本", "数据文件": "data/daren_clusters_k3.csv", "样本量": len(clusters), "说明": "已带三类群体标签的达人聚类结果"},
-            {"数据层级": "帖子文本样本", "数据文件": "data/dom_crawl/posts.csv", "样本量": len(posts), "说明": "达人标题、正文、帖子状态与可见评论数"},
-            {"数据层级": "评论文本样本", "数据文件": "data/dom_crawl/comments.csv", "样本量": len(comments), "说明": "评论正文与点赞数"},
-            {"数据层级": "文本-聚类对齐达人", "数据文件": "cluster + dom_crawl", "样本量": cluster_matched['creator_id'].nunique(), "说明": "既有三类群体标签又有帖子/评论文本的达人"},
+            {"数据层级": "帖子文本样本", "数据文件": post_source, "样本量": len(posts), "说明": "达人标题、正文、帖子状态与可见评论数"},
+            {"数据层级": "评论文本样本", "数据文件": comment_source, "样本量": len(comments), "说明": "评论正文与点赞数"},
+            {"数据层级": "文本-聚类对齐达人", "数据文件": "cluster + text snapshot", "样本量": cluster_matched['creator_id'].nunique(), "说明": "既有三类群体标签又有帖子/评论文本的达人"},
         ]
     )
     source_table.to_csv(TABLES_DIR / "table_4_1_data_sources.csv", index=False)
@@ -314,6 +335,62 @@ def build_post_cooccurrence_outputs(clusters: pd.DataFrame, posts: pd.DataFrame)
         plt.tight_layout()
         plt.savefig(PLOTS_DIR / "post_keyword_cooccurrence_network.png", dpi=180, bbox_inches="tight")
         plt.close()
+
+
+def export_topic_outputs(clusters: pd.DataFrame) -> None:
+    topic_path = TOPIC_DIR / "post_topics.csv"
+    post_topic_path = TOPIC_DIR / "posts_with_topics.csv"
+    if not topic_path.exists() or not post_topic_path.exists():
+        return
+
+    topic_df = pd.read_csv(topic_path)
+    topic_df["代表关键词"] = topic_df["keywords"].fillna("").map(
+        lambda x: "、".join(str(x).split(" | ")[:8])
+    )
+
+    def representative_text(raw: Any) -> str:
+        if pd.isna(raw):
+            return ""
+        try:
+            parsed = json.loads(str(raw))
+        except Exception:
+            return ""
+        texts = []
+        for item in parsed[:2]:
+            if isinstance(item, dict):
+                texts.append(str(item.get("post_text", ""))[:36])
+        return "；".join(texts)
+
+    topic_df["代表文本"] = topic_df["representative_posts"].map(representative_text)
+    topic_table = topic_df[["topic_name", "post_count", "代表关键词", "代表文本"]].copy()
+    topic_table.columns = ["主题名称", "帖子数", "代表关键词", "代表文本"]
+    topic_table.to_csv(TABLES_DIR / "table_4_3a_topic_lda_results.csv", index=False)
+
+    posts_with_topics = pd.read_csv(post_topic_path, usecols=["creator_id", "topic_id"])
+    posts_with_topics["creator_id"] = posts_with_topics["creator_id"].astype(str)
+    topic_name_map = topic_df[["topic_id", "topic_name"]].copy()
+    posts_with_topics = posts_with_topics.merge(
+        clusters[["creator_id", "群体标签_k3"]],
+        on="creator_id",
+        how="inner",
+    ).merge(topic_name_map, on="topic_id", how="left")
+    topic_share = (
+        posts_with_topics.groupby(["群体标签_k3", "topic_name"])
+        .size()
+        .rename("帖子数")
+        .reset_index()
+    )
+    totals = topic_share.groupby("群体标签_k3")["帖子数"].transform("sum")
+    topic_share["占比"] = (topic_share["帖子数"] / totals).round(4)
+    topic_share.to_csv(TABLES_DIR / "table_4_3d_group_topic_distribution_long.csv", index=False)
+
+    topic_compare = (
+        topic_share.pivot(index="topic_name", columns="群体标签_k3", values="占比")
+        .fillna(0)
+        .reset_index()
+    )
+    topic_compare.columns = ["主题名称"] + [f"群体{col}_占比" for col in topic_compare.columns[1:]]
+    topic_compare.to_csv(TABLES_DIR / "table_4_3e_group_topic_distribution_compare.csv", index=False)
 
 
 def build_method_flowchart() -> None:
@@ -486,9 +563,10 @@ def write_markdown_summary(
         "- 表 4-1 数据来源与样本规模",
         "- 表 4-2 文本预处理规则",
         "- 表 4-3 共现网络构建规则",
-        "- 表 4-3a 帖子高频关键词频表",
-        "- 表 4-3b 帖子关键词共现边表",
-        "- 表 4-3c 三类群体帖子高频词对比表",
+        "- 表 4-3a 帖子文本LDA主题提取结果",
+        "- 表 4-3b 帖子高频关键词频表",
+        "- 表 4-3c 帖子关键词共现边表",
+        "- 表 4-3d 三类群体帖子主题分布对比表",
         "- 表 4-4 评论互动类型定义",
         "- 表 4-5a 聚类变量定义表",
         "- 表 4-5 K值选择指标",
@@ -510,8 +588,11 @@ def write_chapter_draft(
     k_metrics = pd.read_csv(TABLES_DIR / "table_4_5_cluster_k_metrics.csv")
     profile = pd.read_csv(TABLES_DIR / "table_4_7_cluster_profile_summary.csv")
     comment_words = pd.read_csv(TABLES_DIR / "table_4_8_group_comment_top_words_compare.csv")
-    interaction_compare = pd.read_csv(TABLES_DIR / "table_4_9_group_comment_interaction_compare.csv")
     post_words = pd.read_csv(TABLES_DIR / "table_4_3c_group_post_keywords_compare.csv")
+    lda_table_path = TABLES_DIR / "table_4_3a_topic_lda_results.csv"
+    lda_compare_path = TABLES_DIR / "table_4_3e_group_topic_distribution_compare.csv"
+    lda_table = pd.read_csv(lda_table_path) if lda_table_path.exists() else pd.DataFrame()
+    lda_compare = pd.read_csv(lda_compare_path) if lda_compare_path.exists() else pd.DataFrame()
 
     best_k_row = k_metrics.sort_values("轮廓系数", ascending=False).iloc[0]
     group_sizes = profile[["群体标签_k3", "群体规模"]].to_dict("records")
@@ -523,6 +604,20 @@ def write_chapter_draft(
         words = df[col].dropna().astype(str).head(n).tolist()
         return "、".join(words)
 
+    lda_lead = ""
+    if not lda_table.empty:
+        lda_lead = "、".join(
+            f"{row['主题名称']}（{int(row['帖子数'])}帖）"
+            for _, row in lda_table.head(4).iterrows()
+        )
+
+    def top_topic_for_group(df: pd.DataFrame, group: int) -> str:
+        col = f"群体{group}_占比"
+        if df.empty or col not in df.columns:
+            return ""
+        row = df.sort_values(col, ascending=False).head(1)
+        return "" if row.empty else str(row.iloc[0]["主题名称"])
+
     lines = [
         "# 第四章写作底稿",
         "",
@@ -531,8 +626,8 @@ def write_chapter_draft(
         "文本预处理方面，本文首先对达人简介、帖子标题、帖子正文与评论内容进行统一清洗，去除 URL、换行与冗余空格；随后使用 jieba 分词工具进行中文分词，并根据停用词表剔除助词、代词、平台通用词及长度小于 2 的无效词项。在此基础上，分别开展高频词统计、共现网络构建与评论互动类型归纳分析。具体规则见表 4-2 至表 4-4。",
         "",
         "## 4.3 基于文本挖掘的达人内容策略与人设特征解析",
-        "### 4.3.1 帖子文本关键词与共现结构",
-        f"基于 {len(posts)} 条帖子文本，本文将标题与正文合并后进行分词统计，并以帖子层面的共同出现关系构建关键词共现网络。整体帖子高频词主要围绕 {top_words_for_group(post_words, '帖子高频词', 0)} 等日常化与审美化表达展开，不同群体的高频词结构也存在一定差异：群体0更偏向 {top_words_for_group(post_words, '帖子高频词', 0)}，群体1更偏向 {top_words_for_group(post_words, '帖子高频词', 1)}，群体2则更常出现 {top_words_for_group(post_words, '帖子高频词', 2)} 等词语。上述结果说明，不同达人群体在内容供给上已呈现出相对稳定的关键词簇与叙事倾向。",
+        "### 4.3.1 基于LDA的内容主题提取与内容生态网络解析",
+        f"基于 {len(posts)} 条帖子文本，本文将标题与正文合并后进行清洗、分词，并采用 LDA 对帖子文本进行主题提取。当前样本中较稳定识别出的主题主要包括 {lda_lead}。从群体比较看，群体0更偏向 {top_topic_for_group(lda_compare, 0)}，群体1更偏向 {top_topic_for_group(lda_compare, 1)}，群体2则更偏向 {top_topic_for_group(lda_compare, 2)}。该结果说明，不同达人群体在内容供给上已经呈现出较稳定的主题结构差异。",
         "在共现网络构建中，本文将经清洗后保留的高频词作为节点，将两个关键词在同一帖子中同时出现记为一次共现，并以累计共现次数作为边权重。该处理不仅能够呈现帖子高频词本身，还能揭示“生活方式表达”“审美化呈现”“商品/场景推荐”等词语之间的结构性联系，从而为后续的人设与内容策略分析提供支持。",
         "",
         "### 4.3.2 三类群体评论文本差异",
@@ -561,6 +656,7 @@ def main() -> None:
     export_method_rule_tables()
     export_cluster_variable_table()
     build_post_cooccurrence_outputs(clusters, posts)
+    export_topic_outputs(clusters)
     build_method_flowchart()
     build_cluster_support(clusters)
     build_comment_group_tables(clusters, comments)
